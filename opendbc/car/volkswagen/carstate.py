@@ -44,10 +44,11 @@ class CarState(CarStateBase):
   def update(self, can_parsers) -> structs.CarState:
     pt_cp = can_parsers[Bus.pt]
     cam_cp = can_parsers[Bus.cam]
+    br_cp = can_parsers[Bus.aux]
     ext_cp = pt_cp if self.CP.networkLocation == NetworkLocation.fwdCamera else cam_cp
 
     if self.CP.flags & VolkswagenFlags.PQ:
-      return self.update_pq(pt_cp, cam_cp, ext_cp)
+      return self.update_pq(pt_cp, br_cp, cam_cp, ext_cp)
 
     ret = structs.CarState()
 
@@ -142,7 +143,7 @@ class CarState(CarStateBase):
     self.frame += 1
     return ret
 
-  def update_pq(self, pt_cp, cam_cp, ext_cp) -> structs.CarState:
+  def update_pq(self, pt_cp, br_cp, cam_cp, ext_cp) -> structs.CarState:
     ret = structs.CarState()
 
     # vEgo obtained from Bremse_1 vehicle speed rather than Bremse_3 wheel speeds because Bremse_3 isn't present on NSF
@@ -211,7 +212,7 @@ class CarState(CarStateBase):
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    ret.cruiseState.speed = pt_cp.vl["Motor_2"]["Soll_Geschwindigkeit_bei_GRA_Be"] * CV.KPH_TO_MS
+    ret.cruiseState.speed = br_cp.vl["Motor_2"]["Soll_Geschwindigkeit_bei_GRA_Be"] * CV.KPH_TO_MS
     if ret.cruiseState.speed > 70:  # 255 kph in m/s == no current setpoint
       ret.cruiseState.speed = 0
 
@@ -269,5 +270,6 @@ class CarState(CarStateBase):
   def get_can_parsers_pq(CP):
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).pt),
+      Bus.aux: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).aux),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).cam),
     }
