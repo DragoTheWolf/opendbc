@@ -147,43 +147,43 @@ class CarState(CarStateBase):
     ret = structs.CarState()
 
     # vEgo obtained from Bremse_1 vehicle speed rather than Bremse_3 wheel speeds because Bremse_3 isn't present on NSF
-    ret.vEgoRaw = br_cp.vl["Bremse_1"]["Geschwindigkeit_neu__Bremse_1_"] * CV.KPH_TO_MS
+    ret.vEgoRaw = pt_cp.vl["Bremse_1"]["Geschwindigkeit_neu__Bremse_1_"] * CV.KPH_TO_MS
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
     ret.standstill = ret.vEgoRaw == 0
 
     # Update EPS position and state info. For signed values, VW sends the sign in a separate signal.
-    ret.steeringAngleDeg = br_cp.vl["Lenkhilfe_3"]["LH3_BLW"] * (1, -1)[int(br_cp.vl["Lenkhilfe_3"]["LH3_BLWSign"])]
-    ret.steeringRateDeg = br_cp.vl["Lenkwinkel_1"]["Lenkradwinkel_Geschwindigkeit"] * (1, -1)[int(br_cp.vl["Lenkwinkel_1"]["Lenkradwinkel_Geschwindigkeit_S"])]
-    ret.steeringTorque = br_cp.vl["Lenkhilfe_3"]["LH3_LM"] * (1, -1)[int(br_cp.vl["Lenkhilfe_3"]["LH3_LMSign"])]
+    ret.steeringAngleDeg = pt_cp.vl["Lenkhilfe_3"]["LH3_BLW"] * (1, -1)[int(pt_cp.vl["Lenkhilfe_3"]["LH3_BLWSign"])]
+    ret.steeringRateDeg = pt_cp.vl["Lenkwinkel_1"]["Lenkradwinkel_Geschwindigkeit"] * (1, -1)[int(pt_cp.vl["Lenkwinkel_1"]["Lenkradwinkel_Geschwindigkeit_S"])]
+    ret.steeringTorque = pt_cp.vl["Lenkhilfe_3"]["LH3_LM"] * (1, -1)[int(pt_cp.vl["Lenkhilfe_3"]["LH3_LMSign"])]
     ret.steeringPressed = abs(ret.steeringTorque) > self.CCP.STEER_DRIVER_ALLOWANCE
     hca_status = self.CCP.hca_status_values.get(br_cp.vl["Lenkhilfe_2"]["LH2_Sta_HCA"])
     ret.steerFaultTemporary, ret.steerFaultPermanent = self.update_hca_state(hca_status)
 
     # Update gas, brakes, and gearshift.
-    ret.gasPressed = br_cp.vl["Motor_3"]["Fahrpedal_Rohsignal"] > 0
-    ret.brake = br_cp.vl["Bremse_5"]["BR5_Bremsdruck"] / 250.0  # FIXME: this is pressure in Bar, not sure what OP expects
-    ret.brakePressed = bool(br_cp.vl["Motor_2"]["Bremslichtschalter"])
-    ret.parkingBrake = bool(br_cp.vl["Kombi_1"]["Bremsinfo"])
+    ret.gasPressed = pt_cp.vl["Motor_3"]["Fahrpedal_Rohsignal"] > 0
+    ret.brake = pt_cp.vl["Bremse_5"]["BR5_Bremsdruck"] / 250.0  # FIXME: this is pressure in Bar, not sure what OP expects
+    ret.brakePressed = bool(pt_cp.vl["Motor_2"]["Bremslichtschalter"])
+    ret.parkingBrake = bool(pt_cp.vl["Kombi_1"]["Bremsinfo"])
 
     # Update gear and/or clutch position data.
     if self.CP.transmissionType == TransmissionType.automatic:
-      ret.gearShifter = self.parse_gear_shifter(self.CCP.shifter_values.get(br_cp.vl["Getriebe_1"]["Waehlhebelposition__Getriebe_1_"], None))
+      ret.gearShifter = self.parse_gear_shifter(self.CCP.shifter_values.get(pt_cp.vl["Getriebe_1"]["Waehlhebelposition__Getriebe_1_"], None))
     elif self.CP.transmissionType == TransmissionType.manual:
-      reverse_light = bool(br_cp.vl["Gate_Komf_1"]["GK1_Rueckfahr"])
+      reverse_light = bool(pt_cp.vl["Gate_Komf_1"]["GK1_Rueckfahr"])
       if reverse_light:
         ret.gearShifter = GearShifter.reverse
       else:
         ret.gearShifter = GearShifter.drive
 
     # Update door and trunk/hatch lid open status.
-    ret.doorOpen = any([br_cp.vl["Gate_Komf_1"]["GK1_Fa_Tuerkont"],
-                        br_cp.vl["Gate_Komf_1"]["BSK_BT_geoeffnet"],
-                        br_cp.vl["Gate_Komf_1"]["BSK_HL_geoeffnet"],
-                        br_cp.vl["Gate_Komf_1"]["BSK_HR_geoeffnet"],
-                        br_cp.vl["Gate_Komf_1"]["BSK_HD_Hauptraste"]])
+    ret.doorOpen = any([pt_cp.vl["Gate_Komf_1"]["GK1_Fa_Tuerkont"],
+                        pt_cp.vl["Gate_Komf_1"]["BSK_BT_geoeffnet"],
+                        pt_cp.vl["Gate_Komf_1"]["BSK_HL_geoeffnet"],
+                        pt_cp.vl["Gate_Komf_1"]["BSK_HR_geoeffnet"],
+                        pt_cp.vl["Gate_Komf_1"]["BSK_HD_Hauptraste"]])
 
     # Update seatbelt fastened status.
-    ret.seatbeltUnlatched = not bool(br_cp.vl["Airbag_1"]["Gurtschalter_Fahrer"])
+    ret.seatbeltUnlatched = not bool(pt_cp.vl["Airbag_1"]["Gurtschalter_Fahrer"])
 
     # Consume blind-spot monitoring info/warning LED states, if available.
     # Infostufe: BSM LED on, Warnung: BSM LED flashing
@@ -213,18 +213,18 @@ class CarState(CarStateBase):
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    ret.cruiseState.speed = br_cp.vl["Motor_2"]["Soll_Geschwindigkeit_bei_GRA_Be"] * CV.KPH_TO_MS
+    ret.cruiseState.speed = ext_cp.vl["Motor_2"]["Soll_Geschwindigkeit_bei_GRA_Be"] * CV.KPH_TO_MS
     if ret.cruiseState.speed > 70:  # 255 kph in m/s == no current setpoint
       ret.cruiseState.speed = 0
 
     # Update button states for turn signals and ACC controls, capture all ACC button state/config for passthrough
-    ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_stalk(300, br_cp.vl["Gate_Komf_1"]["GK1_Blinker_li"],
-                                                                            br_cp.vl["Gate_Komf_1"]["GK1_Blinker_re"])
+    ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_stalk(300, pt_cp.vl["Gate_Komf_1"]["GK1_Blinker_li"],
+                                                                            pt_cp.vl["Gate_Komf_1"]["GK1_Blinker_re"])
     ret.buttonEvents = self.create_button_events(br_cp, self.CCP.BUTTONS)
-    self.gra_stock_values = br_cp.vl["GRA_Neu"]
+    self.gra_stock_values = pt_cp.vl["GRA_Neu"]
 
     # Additional safety checks performed in CarInterface.
-    ret.espDisabled = bool(br_cp.vl["Bremse_1"]["ESP_Passiv_getastet"])
+    ret.espDisabled = bool(pt_cp.vl["Bremse_1"]["ESP_Passiv_getastet"])
 
     ret.lowSpeedAlert = self.update_low_speed_alert(ret.vEgo)
 
