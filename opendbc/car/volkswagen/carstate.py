@@ -209,6 +209,7 @@ class CarState(CarStateBase):
     self.acc_type = 0
     ret.cruiseState.available = True
     ret.cruiseState.enabled = True
+    ret.accFaulted = False
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
