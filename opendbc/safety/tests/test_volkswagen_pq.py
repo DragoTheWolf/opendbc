@@ -100,6 +100,76 @@ class TestVolkswagenPqStockSafety(TestVolkswagenPqSafetyBase):
     self.assertTrue(self._tx(self._button_msg(resume=True)))
 
 
+class TestVolkswagenPqCcSafetyBase(TestVolkswagenPqSafetyBase):
+  SAFETY_MODEL = CarParams.SafetyModel.volkswagenPq
+  SAFETY_PARAM = VolkswagenSafetyFlags.PQ_CC_ONLY
+  RX_BUS = 0
+  STEER_BUS = 0
+  FWD_BUS_LOOKUP = {2: 0}
+  FWD_BLACKLISTED_ADDRS = {2: [MSG_HCA_1, MSG_LDW_1]}
+  TX_MSGS = [[MSG_HCA_1, 0], [MSG_LDW_1, 0], [MSG_GRA_NEU, 0]]
+
+  def _pt_msg(self, msg):
+    msg[0].bus = self.RX_BUS
+    return msg
+
+  def _speed_msg(self, speed):
+    return self._pt_msg(super()._speed_msg(speed))
+
+  def _motor_2_msg(self, brake_pressed=False, cruise_engaged=False):
+    return self._pt_msg(super()._motor_2_msg(brake_pressed, cruise_engaged))
+
+  def _motor_5_msg(self, main_switch=False):
+    return self._pt_msg(super()._motor_5_msg(main_switch))
+
+  def _user_gas_msg(self, gas):
+    return self._pt_msg(super()._user_gas_msg(gas))
+
+  def _torque_driver_msg(self, torque):
+    return self._pt_msg(super()._torque_driver_msg(torque))
+
+  def _torque_cmd_msg(self, torque, steer_req=1, hca_status=7):
+    msg = super()._torque_cmd_msg(torque, steer_req, hca_status)
+    msg[0].bus = self.STEER_BUS
+    return msg
+
+  def test_only_cancel_buttons_allowed(self):
+    for allowed in (False, True):
+      self.safety.set_controls_allowed(allowed)
+      self.assertTrue(self._tx(self._button_msg(cancel=True, bus=self.RX_BUS)))
+      self.assertFalse(self._tx(self._button_msg(resume=True, bus=self.RX_BUS)))
+      self.assertFalse(self._tx(self._button_msg(_set=True, bus=self.RX_BUS)))
+
+  def test_longitudinal_flag_cannot_enable_acc_commands(self):
+    self.safety.set_safety_hooks(self.SAFETY_MODEL, self.SAFETY_PARAM | VolkswagenSafetyFlags.LONG_CONTROL)
+    self.safety.set_controls_allowed(True)
+    self.assertFalse(self._tx(self._accel_msg(0.0)))
+
+  def test_cruise_on_wrong_bus_cannot_enable(self):
+    msg = self._motor_2_msg(cruise_engaged=True)
+    msg[0].bus = 1 - self.RX_BUS
+    self._rx(msg)
+    self.assertFalse(self.safety.get_controls_allowed())
+
+
+class TestVolkswagenPqCcSafety(TestVolkswagenPqCcSafetyBase):
+  pass
+
+
+class TestVolkswagenPqGatewayCcSafety(TestVolkswagenPqCcSafetyBase):
+  SAFETY_PARAM = VolkswagenSafetyFlags.PQ_CC_ONLY | VolkswagenSafetyFlags.PQ_POWERTRAIN_BUS1
+  RX_BUS = 1
+  TX_MSGS = [[MSG_HCA_1, 0], [MSG_LDW_1, 0], [MSG_GRA_NEU, 1]]
+
+
+class TestVolkswagenPqLowlineCcSafety(TestVolkswagenPqGatewayCcSafety):
+  SAFETY_PARAM = TestVolkswagenPqGatewayCcSafety.SAFETY_PARAM | VolkswagenSafetyFlags.PQ_STEERING_BUS1
+  STEER_BUS = 1
+  TX_MSGS = [[MSG_HCA_1, 1], [MSG_LDW_1, 1], [MSG_GRA_NEU, 1]]
+  RELAY_MALFUNCTION_ADDRS = {1: (MSG_HCA_1, MSG_LDW_1)}
+  FWD_BLACKLISTED_ADDRS = {}
+
+
 class TestVolkswagenPqLongSafety(TestVolkswagenPqSafetyBase, common.LongitudinalAccelSafetyTest):
   SAFETY_MODEL = CarParams.SafetyModel.volkswagenPq
   SAFETY_PARAM = VolkswagenSafetyFlags.LONG_CONTROL

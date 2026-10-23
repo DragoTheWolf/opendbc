@@ -14,6 +14,13 @@
 #define MSG_ACC_GRA_ANZEIGE     0x56AU   // TX by OP, ACC HUD
 #define MSG_LDW_1               0x5BEU   // TX by OP, Lane line recognition and text alerts
 
+#define FLAG_VOLKSWAGEN_PQ_CC_ONLY 4U
+#define FLAG_VOLKSWAGEN_PQ_POWERTRAIN_BUS1 8U
+#define FLAG_VOLKSWAGEN_PQ_STEERING_BUS1 16U
+
+static bool volkswagen_pq_cc_only = false;
+static unsigned int volkswagen_pq_rx_bus = 0U;
+
 static uint32_t volkswagen_pq_get_checksum(const CANPacket_t *msg) {
   return (uint32_t)msg->data[(msg->addr == MSG_MOTOR_5) ? 7 : 0];
 }
@@ -73,6 +80,35 @@ static safety_config volkswagen_pq_init(uint16_t param) {
 
   volkswagen_common_init();
 
+  volkswagen_pq_cc_only = GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_CC_ONLY);
+  volkswagen_pq_rx_bus = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_POWERTRAIN_BUS1) ? 1U : 0U;
+  const unsigned int steer_bus = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_STEERING_BUS1) ? 1U : 0U;
+  static RxCheck volkswagen_pq_bus1_rx_checks[] = {
+    {.msg = {{MSG_LENKHILFE_3, 1, 6, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MSG_BREMSE_1, 1, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MSG_MOTOR_2, 1, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MSG_MOTOR_3, 1, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MSG_MOTOR_5, 1, 8, 50U, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MSG_GRA_NEU, 1, 4, 30U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+  };
+
+  static CanMsg volkswagen_pq_cc_tx_msgs[] = {
+    {MSG_HCA_1, 0, 5, .check_relay = true},
+    {MSG_LDW_1, 0, 8, .check_relay = true},
+    {MSG_GRA_NEU, 0, 4, .check_relay = false},
+  };
+  volkswagen_pq_cc_tx_msgs[0].bus = steer_bus;
+  volkswagen_pq_cc_tx_msgs[1].bus = steer_bus;
+  volkswagen_pq_cc_tx_msgs[2].bus = volkswagen_pq_rx_bus;
+  if (volkswagen_pq_cc_only) {
+    // No ACC acceleration/HUD messages, even if LONG_CONTROL was also requested.
+    safety_config config = BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, volkswagen_pq_cc_tx_msgs);
+    if (volkswagen_pq_rx_bus == 1U) {
+      SET_RX_CHECKS(volkswagen_pq_bus1_rx_checks, config);
+    }
+    return config;
+  }
+
 #ifdef ALLOW_DEBUG
   volkswagen_longitudinal = GET_FLAG(param, FLAG_VOLKSWAGEN_LONG_CONTROL);
 #else
@@ -85,7 +121,7 @@ static safety_config volkswagen_pq_init(uint16_t param) {
 static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
   // Update in-motion state from speed value.
   // Signal: Bremse_1.BR1_Rad_kmh
-  if (msg_matches(msg, MSG_BREMSE_1, 0U)) {
+  if (msg_matches(msg, MSG_BREMSE_1, volkswagen_pq_rx_bus)) {
     int speed = ((msg->data[2] & 0xFEU) >> 1) | (msg->data[3] << 7);
     vehicle_moving = speed > 0;
   }
@@ -93,7 +129,7 @@ static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
   // Update driver input torque samples
   // Signal: Lenkhilfe_3.LH3_LM (absolute torque)
   // Signal: Lenkhilfe_3.LH3_LMSign (direction)
-  if (msg_matches(msg, MSG_LENKHILFE_3, 0U)) {
+  if (msg_matches(msg, MSG_LENKHILFE_3, volkswagen_pq_rx_bus)) {
     int torque_driver_new = msg->data[2] | ((msg->data[3] & 0x3U) << 8);
     int sign = (msg->data[3] & 0x4U) >> 2;
     if (sign == 1) {
@@ -130,7 +166,7 @@ static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
       }
     }
   } else {
-    if (msg_matches(msg, MSG_MOTOR_2, 0U)) {
+    if (msg_matches(msg, MSG_MOTOR_2, volkswagen_pq_rx_bus)) {
       // Enter controls on rising edge of stock ACC, exit controls if stock ACC disengages
       // Signal: Motor_2.MO2_Sta_GRA
       int acc_status = (msg->data[2] & 0xC0U) >> 6;
@@ -140,12 +176,12 @@ static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
   }
 
   // Signal: Motor_3.MO3_Pedalwert
-  if (msg_matches(msg, MSG_MOTOR_3, 0U)) {
+  if (msg_matches(msg, MSG_MOTOR_3, volkswagen_pq_rx_bus)) {
     gas_pressed = (msg->data[2]);
   }
 
   // Signal: Motor_2.MO2_BLS
-  if (msg_matches(msg, MSG_MOTOR_2, 0U)) {
+  if (msg_matches(msg, MSG_MOTOR_2, volkswagen_pq_rx_bus)) {
     brake_pressed = (msg->data[2] & 0x1U);
   }
 }
@@ -204,7 +240,7 @@ static bool volkswagen_pq_tx_hook(const CANPacket_t *msg) {
 
   // FORCE CANCEL: ensuring that only the cancel button press is sent when controls are off.
   // This avoids unintended engagements while still allowing resume spam
-  if ((msg->addr == MSG_GRA_NEU) && !controls_allowed) {
+  if ((msg->addr == MSG_GRA_NEU) && (!controls_allowed || volkswagen_pq_cc_only)) {
     // Signal: GRA_Neu.GRA_Neu_Setzen
     // Signal: GRA_Neu.GRA_Neu_Recall
     if (GET_BIT(msg, 16U) || GET_BIT(msg, 17U)) {
@@ -215,10 +251,18 @@ static bool volkswagen_pq_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
+static bool volkswagen_pq_fwd_hook(int bus_num, int addr) {
+  SAFETY_UNUSED(addr);
+  // CC-only cars have no camera bus. Keep forwarding from bus 2 to the car,
+  // but do not copy car traffic onto the absent camera side.
+  return volkswagen_pq_cc_only && (bus_num == 0);
+}
+
 const safety_hooks volkswagen_pq_hooks = {
   .init = volkswagen_pq_init,
   .rx = volkswagen_pq_rx_hook,
   .tx = volkswagen_pq_tx_hook,
+  .fwd = volkswagen_pq_fwd_hook,
   .get_counter = volkswagen_pq_get_counter,
   .get_checksum = volkswagen_pq_get_checksum,
   .compute_checksum = volkswagen_pq_compute_checksum,

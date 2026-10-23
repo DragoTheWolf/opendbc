@@ -20,6 +20,7 @@ Button = namedtuple('Button', ['event_type', 'can_addr', 'can_msg', 'values'])
 class CanBus(CanBusBase):
   def __init__(self, CP=None, fingerprint=None) -> None:
     super().__init__(CP, fingerprint)
+    self.CP = CP
 
     self._ext = self.offset
     if CP is not None:
@@ -28,6 +29,8 @@ class CanBus(CanBusBase):
   @property
   def pt(self) -> int:
     # ADAS / Extended CAN, gateway side of the relay
+    if self.CP is not None and self.CP.flags & VolkswagenFlags.PQ_STEERING_BUS1:
+      return self.offset + 1
     return self.offset
 
   @property
@@ -44,7 +47,15 @@ class CanBus(CanBusBase):
   @property
   def ext(self) -> int:
     # ADAS / Extended CAN, side of the relay with the ACC radar
+    if self.CP is not None and self.CP.flags & VolkswagenFlags.PQ_CC_ONLY:
+      return self.powertrain
     return self._ext
+
+  @property
+  def powertrain(self) -> int:
+    if self.CP is not None and self.CP.flags & VolkswagenFlags.PQ_POWERTRAIN_BUS1:
+      return self.offset + 1
+    return self.offset
 
 
 class CarControllerParams:
@@ -215,6 +226,9 @@ class WMI(StrEnum):
 class VolkswagenSafetyFlags(IntFlag):
   LONG_CONTROL = 1
   MEB_ALT_CRC = 2
+  PQ_CC_ONLY = 4
+  PQ_POWERTRAIN_BUS1 = 8
+  PQ_STEERING_BUS1 = 16
 
 
 class VolkswagenFlags(IntFlag):
@@ -224,6 +238,9 @@ class VolkswagenFlags(IntFlag):
   ALT_GEAR = 32
   STOCK_KLR_PRESENT = 64
   HAS_BSM = 256  # blind spot monitoring
+  PQ_CC_ONLY = 512
+  PQ_POWERTRAIN_BUS1 = 1024
+  PQ_STEERING_BUS1 = 2048
 
   # Static flags
   PQ = 2

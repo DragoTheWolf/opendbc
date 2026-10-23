@@ -36,6 +36,27 @@ class CarInterface(CarInterfaceBase):
 
       ret.dashcamOnly = is_release  # Release support needs HCA timeout fix, safety validation
 
+      # This testing port uses the user's working NMS selection for a CC-only Golf.
+      # Require engine cruise traffic so an empty fingerprint cannot enable this mode.
+      engine_msgs = (0x288, 0x380, 0x480)
+      pt_bus = next((bus for bus in (1, 0) if all(msg in fingerprint[bus] for msg in engine_msgs)), None)
+      # A CC-only gateway car can publish ACC_GRA_Anzeige on powertrain CAN.
+      # Only its presence on ADAS CAN identifies a radar; ACC_System does on any bus.
+      has_acc = any(0x368 in fingerprint[bus] for bus in (0, 1, 2)) or any(0x56A in fingerprint[bus] for bus in (0, 2))
+      if candidate == CAR.VOLKSWAGEN_PASSAT_NMS and pt_bus is not None and not has_acc and not docs:
+        ret.flags |= VolkswagenFlags.PQ_CC_ONLY.value
+        safety_configs[0].safetyParam |= VolkswagenSafetyFlags.PQ_CC_ONLY.value
+        if pt_bus == 1:
+          ret.flags |= VolkswagenFlags.PQ_POWERTRAIN_BUS1.value
+          safety_configs[0].safetyParam |= VolkswagenSafetyFlags.PQ_POWERTRAIN_BUS1.value
+          if not fingerprint[0]:
+            ret.flags |= VolkswagenFlags.PQ_STEERING_BUS1.value
+            safety_configs[0].safetyParam |= VolkswagenSafetyFlags.PQ_STEERING_BUS1.value
+        ret.transmissionType = TransmissionType.automatic if 0x440 in fingerprint[pt_bus] else TransmissionType.manual
+        ret.networkLocation = NetworkLocation.gateway
+        ret.radarUnavailable = True
+        ret.dashcamOnly = False
+
     elif ret.flags & VolkswagenFlags.MLB:
       # Set global MLB parameters
       safety_configs = [get_safety_config(structs.CarParams.SafetyModel.volkswagenMlb)]
@@ -123,8 +144,8 @@ class CarInterface(CarInterfaceBase):
       ret.openpilotLongitudinalControl = True
       ret.longitudinalActuatorDelay = 0.3
     else:
-      ret.alphaLongitudinalAvailable = ret.networkLocation == NetworkLocation.gateway or docs
-      if alpha_long:
+      ret.alphaLongitudinalAvailable = (ret.networkLocation == NetworkLocation.gateway or docs) and not ret.flags & VolkswagenFlags.PQ_CC_ONLY
+      if alpha_long and not ret.flags & VolkswagenFlags.PQ_CC_ONLY:
         ret.openpilotLongitudinalControl = True
         safety_configs[0].safetyParam |= VolkswagenSafetyFlags.LONG_CONTROL.value
         if ret.transmissionType == TransmissionType.manual:

@@ -148,6 +148,7 @@ class CarState(CarStateBase):
 
   def update_pq(self, pt_cp, cam_cp, ext_cp) -> structs.CarState:
     ret = structs.CarState()
+    cc_only = bool(self.CP.flags & VolkswagenFlags.PQ_CC_ONLY)
 
     # vEgo obtained from Bremse_1 vehicle speed rather than Bremse_3 wheel speeds because Bremse_3 isn't present on NSF
     ret.vEgoRaw = pt_cp.vl["Bremse_1"]["BR1_Rad_kmh"] * CV.KPH_TO_MS
@@ -208,17 +209,22 @@ class CarState(CarStateBase):
     ret.stockAeb = False
 
     # Update ACC radar status.
-    self.acc_type = ext_cp.vl["ACC_System"]["ACS_Typ_ACC"]
+    self.acc_type = 0 if cc_only else ext_cp.vl["ACC_System"]["ACS_Typ_ACC"]
     ret.cruiseState.available = bool(pt_cp.vl["Motor_5"]["MO5_GRA_Hauptsch"])
     ret.cruiseState.enabled = pt_cp.vl["Motor_2"]["MO2_Sta_GRA"] in (1, 2)
-    if self.CP.pcmCruise:
+    if self.CP.pcmCruise and not cc_only:
       ret.accFaulted = ext_cp.vl["ACC_GRA_Anzeige"]["ACA_StaACC"] in (6, 7)
     else:
       ret.accFaulted = pt_cp.vl["Motor_2"]["MO2_Sta_GRA"] == 3
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    ret.cruiseState.speed = ext_cp.vl["ACC_GRA_Anzeige"]["ACA_V_Wunsch"] * CV.KPH_TO_MS
+    ret.cruiseState.nonAdaptive = cc_only
+    if cc_only:
+      ret.cruiseState.available = ret.cruiseState.available and not ret.accFaulted
+      ret.cruiseState.speed = pt_cp.vl["Motor_2"]["MO2_GRA_Soll"] * CV.KPH_TO_MS
+    else:
+      ret.cruiseState.speed = ext_cp.vl["ACC_GRA_Anzeige"]["ACA_V_Wunsch"] * CV.KPH_TO_MS
     if ret.cruiseState.speed > 70:  # 255 kph in m/s == no current setpoint
       ret.cruiseState.speed = 0
 
@@ -439,7 +445,7 @@ class CarState(CarStateBase):
   @staticmethod
   def get_can_parsers_pq(CP):
     return {
-      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).pt),
+      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).powertrain),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).cam),
       Bus.alt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).alt),
     }
