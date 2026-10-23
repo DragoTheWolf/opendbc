@@ -351,7 +351,11 @@ static void generic_rx_checks(void) {
   gas_pressed_prev = gas_pressed;
 
   // exit controls on rising edge of brake press
-  if (brake_pressed && (!brake_pressed_prev || vehicle_moving)) {
+  // Only this explicitly selected CC-only lateral mode retains steering on
+  // brake. Its TX allowlist rejects all acceleration/SET/RESUME commands.
+  // Never use a stale PQ flag after switching to another safety model.
+  const bool pq_aol_brake = (current_safety_mode == SAFETY_VOLKSWAGEN_PQ) && volkswagen_pq_aol;
+  if (brake_pressed && (!brake_pressed_prev || vehicle_moving) && !pq_aol_brake) {
     controls_allowed = false;
   }
   brake_pressed_prev = brake_pressed;

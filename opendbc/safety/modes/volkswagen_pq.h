@@ -17,8 +17,12 @@
 #define FLAG_VOLKSWAGEN_PQ_CC_ONLY 4U
 #define FLAG_VOLKSWAGEN_PQ_POWERTRAIN_BUS1 8U
 #define FLAG_VOLKSWAGEN_PQ_STEERING_BUS1 16U
+#define FLAG_VOLKSWAGEN_PQ_AOL 32U
 
 static bool volkswagen_pq_cc_only = false;
+static bool volkswagen_pq_aol = false;
+static bool volkswagen_pq_cruise_fault = false;
+static bool volkswagen_pq_cancel_pressed = false;
 static unsigned int volkswagen_pq_rx_bus = 0U;
 
 static uint32_t volkswagen_pq_get_checksum(const CANPacket_t *msg) {
@@ -81,6 +85,9 @@ static safety_config volkswagen_pq_init(uint16_t param) {
   volkswagen_common_init();
 
   volkswagen_pq_cc_only = GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_CC_ONLY);
+  volkswagen_pq_aol = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_AOL);
+  volkswagen_pq_cruise_fault = false;
+  volkswagen_pq_cancel_pressed = false;
   volkswagen_pq_rx_bus = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_POWERTRAIN_BUS1) ? 1U : 0U;
   const unsigned int steer_bus = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_STEERING_BUS1) ? 1U : 0U;
   static RxCheck volkswagen_pq_bus1_rx_checks[] = {
@@ -100,22 +107,21 @@ static safety_config volkswagen_pq_init(uint16_t param) {
   volkswagen_pq_cc_tx_msgs[0].bus = steer_bus;
   volkswagen_pq_cc_tx_msgs[1].bus = steer_bus;
   volkswagen_pq_cc_tx_msgs[2].bus = volkswagen_pq_rx_bus;
-  if (volkswagen_pq_cc_only) {
-    // No ACC acceleration/HUD messages, even if LONG_CONTROL was also requested.
-    safety_config config = BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, volkswagen_pq_cc_tx_msgs);
-    if (volkswagen_pq_rx_bus == 1U) {
-      SET_RX_CHECKS(volkswagen_pq_bus1_rx_checks, config);
-    }
-    return config;
-  }
-
 #ifdef ALLOW_DEBUG
-  volkswagen_longitudinal = GET_FLAG(param, FLAG_VOLKSWAGEN_LONG_CONTROL);
+  volkswagen_longitudinal = !volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_LONG_CONTROL);
 #else
   SAFETY_UNUSED(param);
 #endif
-  return volkswagen_longitudinal ? BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, VOLKSWAGEN_PQ_LONG_TX_MSGS) : \
-                                   BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, VOLKSWAGEN_PQ_STOCK_TX_MSGS);
+  safety_config config = volkswagen_longitudinal ? BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, VOLKSWAGEN_PQ_LONG_TX_MSGS) :
+                                                  BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, VOLKSWAGEN_PQ_STOCK_TX_MSGS);
+  if (volkswagen_pq_cc_only) {
+    // No ACC acceleration/HUD messages, even if LONG_CONTROL was also requested.
+    config = BUILD_SAFETY_CFG(volkswagen_pq_rx_checks, volkswagen_pq_cc_tx_msgs);
+    if (volkswagen_pq_rx_bus == 1U) {
+      SET_RX_CHECKS(volkswagen_pq_bus1_rx_checks, config);
+    }
+  }
+  return config;
 }
 
 static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
@@ -138,7 +144,52 @@ static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
     update_sample(&torque_driver, torque_driver_new);
   }
 
-  if (volkswagen_longitudinal) {
+  if (volkswagen_pq_aol) {
+    // Independent lateral permission for CC-only cars. No acceleration,
+    // SET, or RESUME transmission is permitted by this mode's TX allowlist.
+    if (msg_matches(msg, MSG_MOTOR_5, volkswagen_pq_rx_bus)) {
+      bool main_on = GET_BIT(msg, 50U);
+      if (!main_on) {
+        controls_allowed = false;
+        volkswagen_set_button_prev = false;
+        volkswagen_resume_button_prev = false;
+      }
+      acc_main_on = main_on;
+    }
+    if (msg_matches(msg, MSG_GRA_NEU, volkswagen_pq_rx_bus)) {
+      bool set_button = GET_BIT(msg, 16U);
+      bool resume_button = GET_BIT(msg, 17U);
+      bool cancel = GET_BIT(msg, 9U);
+      volkswagen_pq_cancel_pressed = cancel;
+      if (((volkswagen_set_button_prev && !set_button) || (volkswagen_resume_button_prev && !resume_button)) &&
+          acc_main_on && !brake_pressed && !cancel && !volkswagen_pq_cruise_fault) {
+        controls_allowed = true;
+      }
+      if (cancel || !acc_main_on || volkswagen_pq_cruise_fault) {
+        controls_allowed = false;
+      }
+      volkswagen_set_button_prev = set_button && acc_main_on && !brake_pressed && !cancel && !volkswagen_pq_cruise_fault;
+      volkswagen_resume_button_prev = resume_button && acc_main_on && !brake_pressed && !cancel && !volkswagen_pq_cruise_fault;
+    }
+    if (msg_matches(msg, MSG_MOTOR_2, volkswagen_pq_rx_bus)) {
+      int cruise_status = (msg->data[2] & 0xC0U) >> 6;
+      bool previous_fault = volkswagen_pq_cruise_fault;
+      volkswagen_pq_cruise_fault = cruise_status == 3;
+      bool cruise_engaged = (cruise_status == 1) || (cruise_status == 2);
+      if (cruise_engaged && !cruise_engaged_prev && acc_main_on && !brake_pressed && !GET_BIT(msg, 16U) &&
+          !previous_fault && !volkswagen_pq_cancel_pressed) {
+        controls_allowed = true;
+      }
+      if (cruise_status == 3) {
+        controls_allowed = false;
+      }
+      if ((cruise_status == 3) || GET_BIT(msg, 16U)) {
+        volkswagen_set_button_prev = false;
+        volkswagen_resume_button_prev = false;
+      }
+      cruise_engaged_prev = cruise_engaged;
+    }
+  } else if (volkswagen_longitudinal) {
     if (msg_matches(msg, MSG_MOTOR_5, 0U)) {
       // ACC main switch on is a prerequisite to enter controls, exit controls immediately on main switch off
       // Signal: Motor_5.MO5_GRA_Hauptsch

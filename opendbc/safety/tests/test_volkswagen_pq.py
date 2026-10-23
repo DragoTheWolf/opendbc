@@ -225,5 +225,154 @@ class TestVolkswagenPqLongSafety(TestVolkswagenPqSafetyBase, common.Longitudinal
                       f"torque cmd rejected with {enabled_status=}")
 
 
+class TestVolkswagenPqAolSafety(TestVolkswagenPqCcSafetyBase):
+  SAFETY_PARAM = VolkswagenSafetyFlags.PQ_CC_ONLY | VolkswagenSafetyFlags.PQ_AOL
+
+  def test_enable_control_allowed_from_cruise(self):
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.safety.set_controls_allowed(False)
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_disable_control_allowed_from_cruise(self):
+    # AOL is independent of stock cruise engagement; main off still kills it.
+    self._rx(self._motor_5_msg(main_switch=True))
+    self._rx(self._pcm_status_msg(True))
+    self._rx(self._pcm_status_msg(False))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self._rx(self._motor_5_msg(main_switch=False))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_allow_user_brake_at_zero_speed(self):
+    # Braking preserves existing lateral permission; it cannot arm it.
+    self._rx(self._speed_msg(0))
+    self._rx(self._user_brake_msg(True))
+    self.safety.set_controls_allowed(True)
+    self._rx(self._user_brake_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_main_rising_only(self):
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.safety.set_controls_allowed(False)
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_not_allow_user_brake_when_moving(self):
+    # Override the stock-cruise expectation only in explicit CC-only AOL.
+    for speed in (0, 1, 10):
+      self._rx(self._speed_msg(speed))
+      self._rx(self._user_brake_msg(True))
+      self.safety.set_controls_allowed(True)
+      self._rx(self._user_brake_msg(True))
+      self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_brake_transitions_to_lateral_only_and_cancel_still_stops(self):
+    self._rx(self._motor_5_msg(main_switch=True))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self._rx(self._speed_msg(20))
+    self._rx(self._motor_2_msg(brake_pressed=True, cruise_engaged=False))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
+    self.assertFalse(self._tx(self._accel_msg(0)))
+    self._rx(self._button_msg(cancel=True, bus=self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
+
+  def test_brake_retention_does_not_leak_to_another_mode(self):
+    self.safety.set_safety_hooks(CarParams.SafetyModel.volkswagen, 0)
+    packer = common.CANPackerSafety('vw_mqb')
+    self.safety.set_controls_allowed(True)
+    msg = packer.make_can_msg_safety('Motor_14', 0, {'MO_Fahrer_bremst': True})
+    self._rx(msg)
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_button_release_and_cancel(self):
+    for button in ('set', 'resume'):
+      self._rx(self._motor_5_msg(main_switch=True))
+      self.safety.set_controls_allowed(False)
+      self._rx(self._button_msg(_set=button == 'set', resume=button == 'resume', bus=self.RX_BUS))
+      self.assertFalse(self.safety.get_controls_allowed())
+      self._rx(self._button_msg(bus=self.RX_BUS))
+      self.assertTrue(self.safety.get_controls_allowed())
+      self._rx(self._button_msg(cancel=True, bus=self.RX_BUS))
+      self.assertFalse(self.safety.get_controls_allowed())
+      self._rx(self._button_msg(bus=self.RX_BUS))
+      self._rx(self._motor_5_msg(main_switch=True))
+      self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_brake_held_prevents_arming(self):
+    self._rx(self._user_brake_msg(True))
+    self._rx(self._motor_5_msg(main_switch=True))
+    self._rx(self._button_msg(_set=True, bus=self.RX_BUS))
+    self._rx(self._button_msg(bus=self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._user_brake_msg(False))
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_wrong_bus_main_and_buttons(self):
+    msg = self._motor_5_msg(main_switch=True)
+    msg[0].bus = 1 - self.RX_BUS
+    self._rx(msg)
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.safety.set_controls_allowed(False)
+    self._rx(self._button_msg(_set=True, bus=1 - self.RX_BUS))
+    self._rx(self._button_msg(bus=1 - self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_cancel_dominates_simultaneous_release(self):
+    self._rx(self._motor_5_msg(main_switch=True))
+    self._rx(self._button_msg(_set=True, bus=self.RX_BUS))
+    self._rx(self._button_msg(cancel=True, bus=self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._button_msg(bus=self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_cruise_fault_blocks_buttons(self):
+    self._rx(self._motor_5_msg(main_switch=True))
+    self._rx(self._motor_2_msg(cruise_engaged=3))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._button_msg(_set=True, bus=self.RX_BUS))
+    self._rx(self._button_msg(bus=self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_aol_requires_cc_only_flag(self):
+    self.safety.set_safety_hooks(self.SAFETY_MODEL, VolkswagenSafetyFlags.PQ_AOL)
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_fault_recovery_does_not_arm_stale_button(self):
+    self._rx(self._motor_5_msg(main_switch=True))
+    self._rx(self._motor_2_msg(cruise_engaged=3))
+    self._rx(self._button_msg(_set=True, bus=self.RX_BUS))
+    self._rx(self._motor_2_msg(cruise_engaged=False))
+    self._rx(self._button_msg(bus=self.RX_BUS))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_cancel_held_blocks_main_cycle(self):
+    self._rx(self._button_msg(cancel=True, bus=self.RX_BUS))
+    self._rx(self._motor_5_msg(main_switch=False))
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+
+class TestVolkswagenPqGatewayAolSafety(TestVolkswagenPqAolSafety):
+  SAFETY_PARAM = TestVolkswagenPqAolSafety.SAFETY_PARAM | VolkswagenSafetyFlags.PQ_POWERTRAIN_BUS1
+  RX_BUS = 1
+  TX_MSGS = [[MSG_HCA_1, 0], [MSG_LDW_1, 0], [MSG_GRA_NEU, 1]]
+
+
+class TestVolkswagenPqLowlineAolSafety(TestVolkswagenPqGatewayAolSafety):
+  SAFETY_PARAM = TestVolkswagenPqGatewayAolSafety.SAFETY_PARAM | VolkswagenSafetyFlags.PQ_STEERING_BUS1
+  STEER_BUS = 1
+  TX_MSGS = [[MSG_HCA_1, 1], [MSG_LDW_1, 1], [MSG_GRA_NEU, 1]]
+  RELAY_MALFUNCTION_ADDRS = {1: (MSG_HCA_1, MSG_LDW_1)}
+  FWD_BLACKLISTED_ADDRS = {}
+
+
 if __name__ == "__main__":
   unittest.main()

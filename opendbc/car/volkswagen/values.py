@@ -229,6 +229,7 @@ class VolkswagenSafetyFlags(IntFlag):
   PQ_CC_ONLY = 4
   PQ_POWERTRAIN_BUS1 = 8
   PQ_STEERING_BUS1 = 16
+  PQ_AOL = 32
 
 
 class VolkswagenFlags(IntFlag):
@@ -241,6 +242,7 @@ class VolkswagenFlags(IntFlag):
   PQ_CC_ONLY = 512
   PQ_POWERTRAIN_BUS1 = 1024
   PQ_STEERING_BUS1 = 2048
+  PQ_AOL = 4096
 
   # Static flags
   PQ = 2
