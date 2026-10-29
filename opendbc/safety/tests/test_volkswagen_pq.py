@@ -253,11 +253,35 @@ class TestVolkswagenPqAolSafety(TestVolkswagenPqCcSafetyBase):
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_main_rising_only(self):
+    # An already-on switch at startup does not arm lateral control.
     self._rx(self._motor_5_msg(main_switch=True))
     self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._motor_5_msg(main_switch=False))
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertTrue(self.safety.get_controls_allowed())
     self.safety.set_controls_allowed(False)
     self._rx(self._motor_5_msg(main_switch=True))
     self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_main_cycle_blocked_by_brake_or_fault(self):
+    for brake, fault in ((True, False), (False, True)):
+      self._rx(self._motor_5_msg(main_switch=False))
+      self._rx(self._motor_2_msg(brake_pressed=brake, cruise_engaged=3 if fault else 0))
+      self._rx(self._motor_5_msg(main_switch=True))
+      self.assertFalse(self.safety.get_controls_allowed())
+      self._rx(self._motor_2_msg(brake_pressed=False, cruise_engaged=0))
+      self._rx(self._motor_5_msg(main_switch=True))
+      self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_main_cycle_does_not_bypass_torque_or_longitudinal_limits(self):
+    self._rx(self._motor_5_msg(main_switch=False))
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP * 3)))
+    self.assertFalse(self._tx(self._accel_msg(0)))
+    self.assertFalse(self._tx(self._button_msg(_set=True, bus=self.RX_BUS)))
+    self.assertFalse(self._tx(self._button_msg(resume=True, bus=self.RX_BUS)))
 
   def test_not_allow_user_brake_when_moving(self):
     # Override the stock-cruise expectation only in explicit CC-only AOL.

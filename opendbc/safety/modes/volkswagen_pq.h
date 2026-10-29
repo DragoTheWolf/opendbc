@@ -23,6 +23,7 @@ static bool volkswagen_pq_cc_only = false;
 static bool volkswagen_pq_aol = false;
 static bool volkswagen_pq_cruise_fault = false;
 static bool volkswagen_pq_cancel_pressed = false;
+static bool volkswagen_pq_main_seen = false;
 static unsigned int volkswagen_pq_rx_bus = 0U;
 
 static uint32_t volkswagen_pq_get_checksum(const CANPacket_t *msg) {
@@ -88,6 +89,7 @@ static safety_config volkswagen_pq_init(uint16_t param) {
   volkswagen_pq_aol = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_AOL);
   volkswagen_pq_cruise_fault = false;
   volkswagen_pq_cancel_pressed = false;
+  volkswagen_pq_main_seen = false;
   volkswagen_pq_rx_bus = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_POWERTRAIN_BUS1) ? 1U : 0U;
   const unsigned int steer_bus = volkswagen_pq_cc_only && GET_FLAG(param, FLAG_VOLKSWAGEN_PQ_STEERING_BUS1) ? 1U : 0U;
   static RxCheck volkswagen_pq_bus1_rx_checks[] = {
@@ -149,12 +151,18 @@ static void volkswagen_pq_rx_hook(const CANPacket_t *msg) {
     // SET, or RESUME transmission is permitted by this mode's TX allowlist.
     if (msg_matches(msg, MSG_MOTOR_5, volkswagen_pq_rx_bus)) {
       bool main_on = GET_BIT(msg, 50U);
+      // Require an observed off-to-on transition, not an already-on switch at startup.
+      if (volkswagen_pq_main_seen && main_on && !acc_main_on && !brake_pressed &&
+          !volkswagen_pq_cruise_fault && !volkswagen_pq_cancel_pressed) {
+        controls_allowed = true;
+      }
       if (!main_on) {
         controls_allowed = false;
         volkswagen_set_button_prev = false;
         volkswagen_resume_button_prev = false;
       }
       acc_main_on = main_on;
+      volkswagen_pq_main_seen = true;
     }
     if (msg_matches(msg, MSG_GRA_NEU, volkswagen_pq_rx_bus)) {
       bool set_button = GET_BIT(msg, 16U);
